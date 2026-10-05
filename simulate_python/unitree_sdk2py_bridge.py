@@ -1,4 +1,5 @@
 import mujoco
+from mujoco.glfw import glfw
 import numpy as np
 import pygame
 import sys
@@ -45,6 +46,10 @@ class UnitreeSdk2Bridge:
         self.idl_type = (self.num_motor > NUM_MOTOR_IDL_GO) # 0: unitree_go, 1: unitree_hg
 
         self.joystick = None
+        self.lowcmd_received = False
+        self.low_cmd = None
+        self._closed = False
+        self.sim_step = 0
 
         # Check sensor
         for i in range(self.dim_motor_sensor, self.mj_model.nsensor):
@@ -110,20 +115,60 @@ class UnitreeSdk2Bridge:
 
     def LowCmdHandler(self, msg: LowCmd_):
         if self.mj_data != None:
-            for i in range(self.num_motor):
-                self.mj_data.ctrl[i] = (
-                    msg.motor_cmd[i].tau
-                    + msg.motor_cmd[i].kp
-                    * (msg.motor_cmd[i].q - self.mj_data.sensordata[i])
-                    + msg.motor_cmd[i].kd
-                    * (
-                        msg.motor_cmd[i].dq
-                        - self.mj_data.sensordata[i + self.num_motor]
-                    )
-                )
+            self.lowcmd_received = True
+            motors = msg.motor_cmd[: self.num_motor]
+            # Guardar una copia numerica. El torque se recalcula en cada paso
+            # fisico, no solamente cuando el hilo DDS recibe un mensaje.
+            self.low_cmd = (
+                np.array([motor.q for motor in motors]),
+                np.array([motor.dq for motor in motors]),
+                np.array([motor.kp for motor in motors]),
+                np.array([motor.kd for motor in motors]),
+                np.array([motor.tau for motor in motors]),
+            )
+
+    def ApplyLowCmd(self):
+        command = self.low_cmd
+        if command is None or self.mj_data is None:
+            return
+        q_target, dq_target, kp, kd, tau = command
+        q = self.mj_data.sensordata[: self.num_motor]
+        dq = self.mj_data.sensordata[self.num_motor : 2 * self.num_motor]
+        control = tau + kp * (q_target - q) + kd * (dq_target - dq)
+        low, high = self.mj_model.actuator_ctrlrange.T
+        self.mj_data.ctrl[:] = np.clip(control, low, high)
+
+    def StepCompleted(self):
+        self.sim_step += 1
+
+    def Close(self):
+        """Detiene los hilos DDS antes de destruir MuJoCo y salir."""
+        if self._closed:
+            return
+        self._closed = True
+
+        # Impedir que entren comandos nuevos mientras se apagan los
+        # publicadores periodicos.
+        self.low_cmd_suber.Close()
+        for worker in (
+            self.lowStateThread,
+            self.HighStateThread,
+            self.WirelessControllerThread,
+        ):
+            worker.Wait(timeout=1.0)
+
+        self.low_state_puber.Close()
+        self.high_state_puber.Close()
+        self.wireless_controller_puber.Close()
+        self.mj_data = None
+
+        if self.joystick is not None:
+            pygame.joystick.quit()
+            pygame.quit()
 
     def PublishLowState(self):
         if self.mj_data != None:
+            self.low_state.tick = self.sim_step
             for i in range(self.num_motor):
                 self.low_state.motor_state[i].q = self.mj_data.sensordata[i]
                 self.low_state.motor_state[i].dq = self.mj_data.sensordata[
@@ -403,6 +448,7 @@ class ElasticBand:
         self.damping = 100
         self.point = np.array([0, 0, 3])
         self.length = 0
+        self.last_distance = 0
         self.enable = True
 
     def Advance(self, x, dx):
@@ -413,16 +459,38 @@ class ElasticBand:
         """
         δx = self.point - x
         distance = np.linalg.norm(δx)
+        self.last_distance = distance
+        if distance < 1e-9:
+            return np.zeros(3)
+
         direction = δx / distance
         v = np.dot(dx, direction)
-        f = (self.stiffness * (distance - self.length) - self.damping * v) * direction
+        # An elastic band pulls only while it is stretched; it must never push
+        # the robot down when its configured length exceeds the distance.
+        tension = max(
+            self.stiffness * (distance - self.length) - self.damping * v,
+            0.0,
+        )
+        f = tension * direction
         return f
 
     def MujuocoKeyCallback(self, key):
-        glfw = mujoco.glfw.glfw
         if key == glfw.KEY_7:
-            self.length -= 0.1
-        if key == glfw.KEY_8:
+            self.length = max(0.0, self.length - 0.1)
+            print(f"Elastic band: lift (length={self.length:.2f} m)")
+        elif key == glfw.KEY_8:
             self.length += 0.1
-        if key == glfw.KEY_9:
+            print(f"Elastic band: lower (length={self.length:.2f} m)")
+        elif key == glfw.KEY_9:
             self.enable = not self.enable
+            if self.enable:
+                # Restore useful, controlled tension after reconnecting.  A
+                # 2 m extension gives about 400 N with the default stiffness,
+                # enough to support G1 without retaining a stale band length.
+                self.length = max(0.0, self.last_distance - 2.0)
+                print(
+                    "Elastic band: enabled "
+                    f"(length reset to {self.length:.2f} m)"
+                )
+            else:
+                print("Elastic band: disabled")
