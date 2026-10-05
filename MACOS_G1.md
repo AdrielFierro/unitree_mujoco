@@ -7,7 +7,7 @@ el control PD dentro del mismo paso físico de MuJoCo.
 La demostración realiza esta secuencia:
 
 1. Adopta la postura inicial.
-2. Da dos pasos cortos cuasiestáticos en el lugar.
+2. Da dos pasos visibles hacia adelante (aproximadamente 12 cm en total).
 3. Hace una sentadilla.
 4. Saluda con el brazo derecho.
 5. Permanece parado hasta cerrar la ventana.
@@ -51,9 +51,12 @@ Se cierra con el botón rojo de la ventana o con `Control+C` en la Terminal.
 
 ## Alcance y seguridad
 
-Los pasos son una marcha cuasiestática en el lugar; no constituyen un
-controlador dinámico de locomoción. Las ganancias PD son deliberadamente altas
-para sostener el robot simulado y no deben enviarse a un robot físico.
+Los pasos usan una ayuda cartesiana de equilibrio horizontal y orientación que
+se desactiva suavemente antes de la rutina. No aplica fuerza vertical: las
+piernas soportan el peso del G1. Sigue siendo una demostración cuasiestática,
+no un controlador dinámico general de locomoción. Las ganancias PD son
+deliberadamente altas para sostener el robot simulado y no deben enviarse a un
+robot físico.
 
 Los ejemplos DDS incluidos usan el dominio `1` y la interfaz local `lo0` en
 macOS. Esto mantiene las comunicaciones dentro de la computadora.

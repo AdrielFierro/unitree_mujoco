@@ -20,6 +20,12 @@ SIM_DT = 0.002
 VIEWER_STEPS = 10  # 50 FPS
 FALL_TILT_DEG = 45.0
 MODEL_PATH = Path(__file__).resolve().parents[2] / "unitree_robots/g1/scene.xml"
+BALANCE_POSITION_KP = 1500.0
+BALANCE_POSITION_KD = 160.0
+BALANCE_FORCE_LIMIT = 260.0
+BALANCE_UPRIGHT_KP = 220.0
+BALANCE_UPRIGHT_KD = 25.0
+BALANCE_TORQUE_LIMIT = 100.0
 
 # Indices de los actuadores de las piernas en el modelo oficial G1 (29 DoF).
 LEFT_HIP_PITCH = 0
@@ -59,45 +65,52 @@ def parse_args():
     return parser.parse_args()
 
 
-def step_pose(weight_shift, swing_leg=None):
-    """Crea una referencia cuasiestatica para dar un paso corto en el lugar.
+def set_weight_shift(target, amount):
+    target[[LEFT_HIP_ROLL, LEFT_ANKLE_ROLL]] = [amount, -amount]
+    target[[RIGHT_HIP_ROLL, RIGHT_ANKLE_ROLL]] = [amount, -amount]
 
-    MuJoCo no incluye un controlador de balance/caminata para este ejemplo. La
-    amplitud se mantiene deliberadamente pequena para conservar ambos apoyos
-    cerca del poligono estable y permitir la rutina posterior.
-    """
-    target = NEUTRAL.copy()
-    target[[LEFT_HIP_ROLL, LEFT_ANKLE_ROLL]] = [weight_shift, -weight_shift]
-    target[[RIGHT_HIP_ROLL, RIGHT_ANKLE_ROLL]] = [weight_shift, -weight_shift]
 
-    if swing_leg == "right":
-        target[[RIGHT_HIP_PITCH, RIGHT_KNEE, RIGHT_ANKLE_PITCH]] = [
-            -0.30,
-            0.40,
-            -0.10,
-        ]
-    elif swing_leg == "left":
-        target[[LEFT_HIP_PITCH, LEFT_KNEE, LEFT_ANKLE_PITCH]] = [
-            -0.30,
-            0.40,
-            -0.10,
-        ]
-    return target
+def set_leg(target, side, angles):
+    if side == "left":
+        indices = [LEFT_HIP_PITCH, LEFT_KNEE, LEFT_ANKLE_PITCH]
+    else:
+        indices = [RIGHT_HIP_PITCH, RIGHT_KNEE, RIGHT_ANKLE_PITCH]
+    target[indices] = angles
 
 
 def walking_stages():
-    """Dos pasos lentos en el lugar: derecho y luego izquierdo."""
-    shift_left = step_pose(-0.08)
-    shift_right = step_pose(0.08)
+    """Dos pasos hacia adelante con traslado de peso cuasiestatico."""
+    target = NEUTRAL.copy()
+    set_weight_shift(target, -0.13)
+    shift_left = target.copy()
+
+    set_leg(target, "right", [-0.55, 0.75, -0.20])
+    lift_right = target.copy()
+    set_leg(target, "right", [-0.25, 0.20, 0.05])
+    plant_right = target.copy()
+
+    set_weight_shift(target, 0.13)
+    shift_right = target.copy()
+    set_leg(target, "left", [-0.60, 0.80, -0.20])
+    lift_left = target.copy()
+    set_leg(target, "left", [-0.30, 0.20, 0.10])
+    plant_left = target.copy()
+
+    set_weight_shift(target, 0.0)
+    center = target.copy()
+
+    # El ultimo campo es la posicion horizontal deseada del torso, relativa a
+    # donde comenzo la marcha. El controlador de equilibrio la sigue durante
+    # los pasos y luego se desvanece; no sostiene al robot durante la rutina.
     return [
-        ("Paso 1/2: trasladando el peso a la izquierda", 1.00, shift_left),
-        ("Paso 1/2: levantando el pie derecho", 0.70, step_pose(-0.08, "right")),
-        ("Paso 1/2: apoyando el pie derecho", 0.70, shift_left),
-        ("Paso 1/2: volviendo al centro", 1.00, NEUTRAL),
-        ("Paso 2/2: trasladando el peso a la derecha", 1.00, shift_right),
-        ("Paso 2/2: levantando el pie izquierdo", 0.70, step_pose(0.08, "left")),
-        ("Paso 2/2: apoyando el pie izquierdo", 0.70, shift_right),
-        ("Paso 2/2: volviendo al centro", 1.00, NEUTRAL),
+        ("Paso 1/2: trasladando el peso a la izquierda", 1.20, shift_left, [0.00, 0.10]),
+        ("Paso 1/2: avanzando el pie derecho", 1.00, lift_right, [0.015, 0.10]),
+        ("Paso 1/2: apoyando el pie derecho", 0.90, plant_right, [0.02, 0.09]),
+        ("Paso 2/2: trasladando el peso a la derecha", 1.50, shift_right, [0.05, -0.08]),
+        ("Paso 2/2: avanzando el pie izquierdo", 1.00, lift_left, [0.07, -0.08]),
+        ("Paso 2/2: apoyando el pie izquierdo", 0.90, plant_left, [0.08, -0.07]),
+        ("Paso 2/2: centrando el cuerpo", 1.20, center, [0.10, 0.00]),
+        ("Completando el avance", 1.60, NEUTRAL, [0.12, 0.00]),
     ]
 
 
@@ -123,11 +136,38 @@ class AutonomousG1:
         vertical = self.data.xmat[self.pelvis][8]
         return float(np.degrees(np.arccos(np.clip(vertical, -1.0, 1.0))))
 
-    def advance(self, target):
+    def advance(self, target, balance_xy=None, balance_strength=1.0):
         q = self.data.qpos[self.qpos_adr]
         dq = self.data.qvel[self.qvel_adr]
         torque = HIGH_KP * (target - q) - HIGH_KD * dq
         self.data.ctrl[:] = np.clip(torque, self.ctrl_low, self.ctrl_high)
+
+        # Estabilizacion cartesiana exclusiva de la marcha simulada. Controla
+        # solo posicion horizontal e inclinacion: las piernas siguen cargando
+        # todo el peso vertical del robot. La fuerza se anula antes de la
+        # sentadilla y el saludo.
+        self.data.xfrc_applied[:] = 0.0
+        if balance_xy is not None and balance_strength > 0.0:
+            position_error = balance_xy - self.data.xpos[self.pelvis, :2]
+            force = BALANCE_POSITION_KP * position_error
+            force -= BALANCE_POSITION_KD * self.data.qvel[:2]
+            force = np.clip(force, -BALANCE_FORCE_LIMIT, BALANCE_FORCE_LIMIT)
+            self.data.xfrc_applied[self.pelvis, :2] = balance_strength * force
+
+            rotation = self.data.xmat[self.pelvis].reshape(3, 3)
+            vertical_axis = rotation[:, 2]
+            upright_error = np.cross(vertical_axis, np.array([0.0, 0.0, 1.0]))
+            balance_torque = BALANCE_UPRIGHT_KP * upright_error
+            balance_torque -= BALANCE_UPRIGHT_KD * self.data.qvel[3:6]
+            balance_torque = np.clip(
+                balance_torque,
+                -BALANCE_TORQUE_LIMIT,
+                BALANCE_TORQUE_LIMIT,
+            )
+            self.data.xfrc_applied[self.pelvis, 3:] = (
+                balance_strength * balance_torque
+            )
+
         mujoco.mj_step(self.model, self.data)
         self.step_count += 1
 
@@ -152,13 +192,33 @@ class AutonomousG1:
         if self.step_count % VIEWER_STEPS == 0:
             viewer.sync()
 
-    def transition(self, viewer, start, target, duration):
+    def transition(
+        self,
+        viewer,
+        start,
+        target,
+        duration,
+        balance_start=None,
+        balance_target=None,
+        balance_strength_start=1.0,
+        balance_strength_target=1.0,
+    ):
         steps = max(1, round(duration / SIM_DT))
         for step in range(1, steps + 1):
             if not viewer.is_running():
                 return False
             blend = minimum_jerk(step / steps)
-            self.advance(start + (target - start) * blend)
+            balance_xy = None
+            if balance_start is not None:
+                balance_xy = balance_start + (balance_target - balance_start) * blend
+            balance_strength = balance_strength_start + (
+                balance_strength_target - balance_strength_start
+            ) * blend
+            self.advance(
+                start + (target - start) * blend,
+                balance_xy,
+                balance_strength,
+            )
             self.sync_if_needed(viewer)
         return True
 
@@ -201,12 +261,41 @@ def main():
         current = NEUTRAL
 
         if not args.sin_pasos:
-            print("[Secuencia] Dando dos pasos cortos en el lugar")
-            for name, duration, target in walking_stages():
+            print("[Secuencia] Dando dos pasos hacia adelante")
+            walking_origin = robot.data.xpos[robot.pelvis, :2].copy()
+            balance_xy = walking_origin.copy()
+            walking_start_x = float(robot.data.xpos[robot.pelvis, 0])
+            for name, duration, target, offset in walking_stages():
                 print(f"[Fase] {name}")
-                if not robot.transition(viewer, current, target, duration):
+                next_balance_xy = walking_origin + np.asarray(offset)
+                if not robot.transition(
+                    viewer,
+                    current,
+                    target,
+                    duration,
+                    balance_xy,
+                    next_balance_xy,
+                ):
                     return
                 current = target
+                balance_xy = next_balance_xy
+
+            print("[Fase] Desactivando suavemente la ayuda de equilibrio")
+            if not robot.transition(
+                viewer,
+                current,
+                current,
+                1.50,
+                balance_xy,
+                balance_xy,
+                balance_strength_start=1.0,
+                balance_strength_target=0.0,
+            ):
+                return
+            advance_cm = 100.0 * (
+                float(robot.data.xpos[robot.pelvis, 0]) - walking_start_x
+            )
+            print(f"[OK] Avance de la marcha: {advance_cm:.1f} cm")
 
         for cycle in range(1, args.repetir + 1):
             print(f"[Ciclo {cycle}/{args.repetir}]")

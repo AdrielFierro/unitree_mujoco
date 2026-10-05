@@ -16,5 +16,5 @@ fi
 
 cd "$ROOT/example/python"
 echo "Abriendo el G1 autonomo sin banda."
-echo "Dara dos pasos cortos, hara la rutina y permanecera parado."
+echo "Dara dos pasos hacia adelante, hara la rutina y permanecera parado."
 exec "$MJ_PYTHON" g1_autonomous_no_band.py "$@"
