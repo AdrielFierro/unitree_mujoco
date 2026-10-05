@@ -1,8 +1,8 @@
-"""Rutina autonoma del G1 en MuJoCo, sin DDS ni banda elastica.
+"""Demostracion autonoma del G1 en MuJoCo para macOS.
 
-El control PD se calcula en cada paso fisico de 2 ms. Es una demostracion
-educativa exclusiva para simulacion: las ganancias son demasiado altas para
-un robot real.
+La marcha usa la politica preentrenada oficial de ``unitree_rl_gym``. No usa
+DDS, banda elastica ni fuerzas externas sobre el robot. La sentadilla, el
+saludo y la postura final se controlan con PD dentro del paso fisico.
 """
 
 import argparse
@@ -13,37 +13,40 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
+
 from g1_squat_wave import HIGH_KD, HIGH_KP, NEUTRAL, minimum_jerk, stages
 
 
 SIM_DT = 0.002
-VIEWER_STEPS = 10  # 50 FPS
+VIEWER_STEPS = 10
 FALL_TILT_DEG = 45.0
-MODEL_PATH = Path(__file__).resolve().parents[2] / "unitree_robots/g1/scene.xml"
-BALANCE_POSITION_KP = 1500.0
-BALANCE_POSITION_KD = 160.0
-BALANCE_FORCE_LIMIT = 260.0
-BALANCE_UPRIGHT_KP = 220.0
-BALANCE_UPRIGHT_KD = 25.0
-BALANCE_TORQUE_LIMIT = 100.0
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MODEL_PATH = PROJECT_ROOT / "unitree_robots/g1/scene.xml"
+POLICY_PATH = (
+    PROJECT_ROOT
+    / "third_party/unitree_rl_gym/deploy/pre_train/g1/motion.pt"
+)
 
-# Indices de los actuadores de las piernas en el modelo oficial G1 (29 DoF).
-LEFT_HIP_PITCH = 0
-LEFT_HIP_ROLL = 1
-LEFT_KNEE = 3
-LEFT_ANKLE_PITCH = 4
-LEFT_ANKLE_ROLL = 5
-RIGHT_HIP_PITCH = 6
-RIGHT_HIP_ROLL = 7
-RIGHT_KNEE = 9
-RIGHT_ANKLE_PITCH = 10
-RIGHT_ANKLE_ROLL = 11
+# Parametros publicados por Unitree para la politica G1 de 12 articulaciones.
+POLICY_KP = np.array([100, 100, 100, 150, 40, 40] * 2, dtype=float)
+POLICY_KD = np.array([2, 2, 2, 4, 2, 2] * 2, dtype=float)
+POLICY_DEFAULT = np.array([-0.1, 0.0, 0.0, 0.3, -0.2, 0.0] * 2)
+POLICY_COMMAND_SCALE = np.array([2.0, 2.0, 0.25])
+POLICY_ACTION_SCALE = 0.25
+POLICY_CONTROL_DECIMATION = 10
+POLICY_OBSERVATIONS = 47
+WALK_FORWARD_SECONDS = 0.8
+WALK_SETTLE_SECONDS = 1.6
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "G1 autonomo: dos pasos, sentadilla y saludo sin banda elastica."
+            "G1 autonomo: dos pasos con politica RL, sentadilla y saludo."
         )
     )
     parser.add_argument(
@@ -65,53 +68,16 @@ def parse_args():
     return parser.parse_args()
 
 
-def set_weight_shift(target, amount):
-    target[[LEFT_HIP_ROLL, LEFT_ANKLE_ROLL]] = [amount, -amount]
-    target[[RIGHT_HIP_ROLL, RIGHT_ANKLE_ROLL]] = [amount, -amount]
-
-
-def set_leg(target, side, angles):
-    if side == "left":
-        indices = [LEFT_HIP_PITCH, LEFT_KNEE, LEFT_ANKLE_PITCH]
-    else:
-        indices = [RIGHT_HIP_PITCH, RIGHT_KNEE, RIGHT_ANKLE_PITCH]
-    target[indices] = angles
-
-
-def walking_stages():
-    """Dos pasos hacia adelante con traslado de peso cuasiestatico."""
-    target = NEUTRAL.copy()
-    set_weight_shift(target, -0.13)
-    shift_left = target.copy()
-
-    set_leg(target, "right", [-0.55, 0.75, -0.20])
-    lift_right = target.copy()
-    set_leg(target, "right", [-0.25, 0.20, 0.05])
-    plant_right = target.copy()
-
-    set_weight_shift(target, 0.13)
-    shift_right = target.copy()
-    set_leg(target, "left", [-0.60, 0.80, -0.20])
-    lift_left = target.copy()
-    set_leg(target, "left", [-0.30, 0.20, 0.10])
-    plant_left = target.copy()
-
-    set_weight_shift(target, 0.0)
-    center = target.copy()
-
-    # El ultimo campo es la posicion horizontal deseada del torso, relativa a
-    # donde comenzo la marcha. El controlador de equilibrio la sigue durante
-    # los pasos y luego se desvanece; no sostiene al robot durante la rutina.
-    return [
-        ("Paso 1/2: trasladando el peso a la izquierda", 1.20, shift_left, [0.00, 0.10]),
-        ("Paso 1/2: avanzando el pie derecho", 1.00, lift_right, [0.015, 0.10]),
-        ("Paso 1/2: apoyando el pie derecho", 0.90, plant_right, [0.02, 0.09]),
-        ("Paso 2/2: trasladando el peso a la derecha", 1.50, shift_right, [0.05, -0.08]),
-        ("Paso 2/2: avanzando el pie izquierdo", 1.00, lift_left, [0.07, -0.08]),
-        ("Paso 2/2: apoyando el pie izquierdo", 0.90, plant_left, [0.08, -0.07]),
-        ("Paso 2/2: centrando el cuerpo", 1.20, center, [0.10, 0.00]),
-        ("Completando el avance", 1.60, NEUTRAL, [0.12, 0.00]),
-    ]
+def gravity_orientation(quaternion):
+    """Gravedad proyectada en el marco del torso, igual que en Unitree RL."""
+    qw, qx, qy, qz = quaternion
+    return np.array(
+        [
+            2.0 * (-qz * qx + qw * qy),
+            -2.0 * (qz * qy + qw * qx),
+            1.0 - 2.0 * (qw * qw + qz * qz),
+        ]
+    )
 
 
 class AutonomousG1:
@@ -136,41 +102,8 @@ class AutonomousG1:
         vertical = self.data.xmat[self.pelvis][8]
         return float(np.degrees(np.arccos(np.clip(vertical, -1.0, 1.0))))
 
-    def advance(self, target, balance_xy=None, balance_strength=1.0):
-        q = self.data.qpos[self.qpos_adr]
-        dq = self.data.qvel[self.qvel_adr]
-        torque = HIGH_KP * (target - q) - HIGH_KD * dq
-        self.data.ctrl[:] = np.clip(torque, self.ctrl_low, self.ctrl_high)
-
-        # Estabilizacion cartesiana exclusiva de la marcha simulada. Controla
-        # solo posicion horizontal e inclinacion: las piernas siguen cargando
-        # todo el peso vertical del robot. La fuerza se anula antes de la
-        # sentadilla y el saludo.
-        self.data.xfrc_applied[:] = 0.0
-        if balance_xy is not None and balance_strength > 0.0:
-            position_error = balance_xy - self.data.xpos[self.pelvis, :2]
-            force = BALANCE_POSITION_KP * position_error
-            force -= BALANCE_POSITION_KD * self.data.qvel[:2]
-            force = np.clip(force, -BALANCE_FORCE_LIMIT, BALANCE_FORCE_LIMIT)
-            self.data.xfrc_applied[self.pelvis, :2] = balance_strength * force
-
-            rotation = self.data.xmat[self.pelvis].reshape(3, 3)
-            vertical_axis = rotation[:, 2]
-            upright_error = np.cross(vertical_axis, np.array([0.0, 0.0, 1.0]))
-            balance_torque = BALANCE_UPRIGHT_KP * upright_error
-            balance_torque -= BALANCE_UPRIGHT_KD * self.data.qvel[3:6]
-            balance_torque = np.clip(
-                balance_torque,
-                -BALANCE_TORQUE_LIMIT,
-                BALANCE_TORQUE_LIMIT,
-            )
-            self.data.xfrc_applied[self.pelvis, 3:] = (
-                balance_strength * balance_torque
-            )
-
-        mujoco.mj_step(self.model, self.data)
+    def finish_physics_step(self):
         self.step_count += 1
-
         tilt = self.tilt_deg()
         self.max_tilt_deg = max(self.max_tilt_deg, tilt)
         if tilt > FALL_TILT_DEG:
@@ -179,8 +112,6 @@ class AutonomousG1:
                 f"({tilt:.1f} grados)."
             )
 
-        # Mantener la simulacion aproximadamente en tiempo real. Sin esta
-        # espera, MuJoCo reproduce la rutina tan rapido como permite la CPU.
         self.next_tick += SIM_DT
         delay = self.next_tick - time.perf_counter()
         if delay > 0:
@@ -188,39 +119,113 @@ class AutonomousG1:
         else:
             self.next_tick = time.perf_counter()
 
+    def advance(self, target):
+        q = self.data.qpos[self.qpos_adr]
+        dq = self.data.qvel[self.qvel_adr]
+        torque = HIGH_KP * (target - q) - HIGH_KD * dq
+        self.data.ctrl[:] = np.clip(torque, self.ctrl_low, self.ctrl_high)
+        self.data.xfrc_applied[:] = 0.0
+        mujoco.mj_step(self.model, self.data)
+        self.finish_physics_step()
+
+    def advance_policy(self, lower_target):
+        q = self.data.qpos[self.qpos_adr]
+        dq = self.data.qvel[self.qvel_adr]
+        torque = np.zeros(self.model.nu)
+        torque[:12] = POLICY_KP * (lower_target - q[:12])
+        torque[:12] -= POLICY_KD * dq[:12]
+        torque[12:] = HIGH_KP[12:] * (NEUTRAL[12:] - q[12:])
+        torque[12:] -= HIGH_KD[12:] * dq[12:]
+        self.data.ctrl[:] = np.clip(torque, self.ctrl_low, self.ctrl_high)
+
+        # La politica controla articulaciones: nunca aplica fuerzas al cuerpo.
+        self.data.xfrc_applied[:] = 0.0
+        mujoco.mj_step(self.model, self.data)
+        self.finish_physics_step()
+
     def sync_if_needed(self, viewer):
         if self.step_count % VIEWER_STEPS == 0:
             viewer.sync()
 
-    def transition(
-        self,
-        viewer,
-        start,
-        target,
-        duration,
-        balance_start=None,
-        balance_target=None,
-        balance_strength_start=1.0,
-        balance_strength_target=1.0,
-    ):
+    def transition(self, viewer, start, target, duration):
         steps = max(1, round(duration / SIM_DT))
         for step in range(1, steps + 1):
             if not viewer.is_running():
                 return False
             blend = minimum_jerk(step / steps)
-            balance_xy = None
-            if balance_start is not None:
-                balance_xy = balance_start + (balance_target - balance_start) * blend
-            balance_strength = balance_strength_start + (
-                balance_strength_target - balance_strength_start
-            ) * blend
-            self.advance(
-                start + (target - start) * blend,
-                balance_xy,
-                balance_strength,
-            )
+            self.advance(start + (target - start) * blend)
             self.sync_if_needed(viewer)
         return True
+
+    def walk_two_steps(self, viewer):
+        """Ejecuta un ciclo de la politica oficial y vuelve a postura alta."""
+        if torch is None:
+            raise RuntimeError(
+                "Falta PyTorch. Instala la dependencia con: "
+                "../.venv/bin/python -m pip install torch"
+            )
+        if not POLICY_PATH.exists():
+            raise RuntimeError(
+                "Falta la politica de Unitree. Ejecuta: "
+                "git submodule update --init --recursive"
+            )
+
+        policy = torch.jit.load(str(POLICY_PATH), map_location="cpu")
+        policy.eval()
+        action = np.zeros(12, dtype=np.float32)
+        lower_target = POLICY_DEFAULT.copy()
+        observation = np.zeros(POLICY_OBSERVATIONS, dtype=np.float32)
+        start_x = float(self.data.xpos[self.pelvis, 0])
+
+        forward_steps = round(WALK_FORWARD_SECONDS / SIM_DT)
+        settle_steps = round(WALK_SETTLE_SECONDS / SIM_DT)
+        total_steps = forward_steps + settle_steps
+
+        print("[Fase] Politica RL: avanzando pie derecho e izquierdo")
+        for policy_step in range(total_steps):
+            if not viewer.is_running():
+                return None
+
+            command = np.zeros(3)
+            if policy_step < forward_steps:
+                command[0] = 0.25
+            elif policy_step == forward_steps:
+                print("[Fase] Politica RL: frenando y recuperando equilibrio")
+
+            self.advance_policy(lower_target)
+            self.sync_if_needed(viewer)
+
+            if policy_step % POLICY_CONTROL_DECIMATION != 0:
+                continue
+
+            q = self.data.qpos[self.qpos_adr]
+            dq = self.data.qvel[self.qvel_adr]
+            phase = (policy_step * SIM_DT % 0.8) / 0.8
+
+            observation[:3] = self.data.qvel[3:6] * 0.25
+            observation[3:6] = gravity_orientation(self.data.qpos[3:7])
+            observation[6:9] = command * POLICY_COMMAND_SCALE
+            observation[9:21] = q[:12] - POLICY_DEFAULT
+            observation[21:33] = dq[:12] * 0.05
+            observation[33:45] = action
+            observation[45:47] = [
+                np.sin(2.0 * np.pi * phase),
+                np.cos(2.0 * np.pi * phase),
+            ]
+
+            with torch.no_grad():
+                tensor = torch.from_numpy(observation).unsqueeze(0)
+                action = policy(tensor).numpy().squeeze()
+            lower_target = action * POLICY_ACTION_SCALE + POLICY_DEFAULT
+
+        print("[Fase] Volviendo a la postura alta")
+        current = self.data.qpos[self.qpos_adr].copy()
+        if not self.transition(viewer, current, current, 0.50):
+            return None
+        if not self.transition(viewer, current, NEUTRAL, 2.00):
+            return None
+
+        return 100.0 * (float(self.data.xpos[self.pelvis, 0]) - start_x)
 
     def hold(self, viewer, target, seconds=None):
         end_step = None
@@ -261,41 +266,12 @@ def main():
         current = NEUTRAL
 
         if not args.sin_pasos:
-            print("[Secuencia] Dando dos pasos hacia adelante")
-            walking_origin = robot.data.xpos[robot.pelvis, :2].copy()
-            balance_xy = walking_origin.copy()
-            walking_start_x = float(robot.data.xpos[robot.pelvis, 0])
-            for name, duration, target, offset in walking_stages():
-                print(f"[Fase] {name}")
-                next_balance_xy = walking_origin + np.asarray(offset)
-                if not robot.transition(
-                    viewer,
-                    current,
-                    target,
-                    duration,
-                    balance_xy,
-                    next_balance_xy,
-                ):
-                    return
-                current = target
-                balance_xy = next_balance_xy
-
-            print("[Fase] Desactivando suavemente la ayuda de equilibrio")
-            if not robot.transition(
-                viewer,
-                current,
-                current,
-                1.50,
-                balance_xy,
-                balance_xy,
-                balance_strength_start=1.0,
-                balance_strength_target=0.0,
-            ):
+            print("[Secuencia] Dos pasos con la politica oficial de Unitree")
+            advance_cm = robot.walk_two_steps(viewer)
+            if advance_cm is None:
                 return
-            advance_cm = 100.0 * (
-                float(robot.data.xpos[robot.pelvis, 0]) - walking_start_x
-            )
             print(f"[OK] Avance de la marcha: {advance_cm:.1f} cm")
+            current = NEUTRAL
 
         for cycle in range(1, args.repetir + 1):
             print(f"[Ciclo {cycle}/{args.repetir}]")
@@ -307,7 +283,7 @@ def main():
 
         print("[Fase] Manteniendo al G1 parado sin banda")
         if args.mantener_segundos is None:
-            print("Cerrá la ventana roja o presioná Control+C para terminar.")
+            print("Cerra la ventana roja o presiona Control+C para terminar.")
         robot.hold(viewer, NEUTRAL, args.mantener_segundos)
 
     print(f"[OK] Inclinacion maxima: {robot.max_tilt_deg:.1f} grados")

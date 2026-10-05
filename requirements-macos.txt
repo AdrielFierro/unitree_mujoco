@@ -1,0 +1,5 @@
+mujoco==3.3.6
+cyclonedds==0.10.2
+pygame==2.6.1
+numpy<2.1
+torch==2.8.0
