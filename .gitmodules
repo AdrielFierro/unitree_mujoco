@@ -1,3 +1,7 @@
 [submodule "third_party/unitree_rl_gym"]
 	path = third_party/unitree_rl_gym
 	url = https://github.com/unitreerobotics/unitree_rl_gym.git
+[submodule "third_party/unitree_sdk2_python"]
+	path = third_party/unitree_sdk2_python
+	url = https://github.com/AdrielFierro/unitree_sdk2_python.git
+	branch = master

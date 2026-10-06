@@ -3,6 +3,9 @@
 `unitree_mujoco` is a simulator developed based on `Unitree sdk2` and `mujoco`. Users can easily integrate the control programs developed with `Unitree_sdk2`, `unitree_ros2`, and `unitree_sdk2_python` into this simulator, enabling a seamless transition from simulation to physical development. The repository includes two versions of the simulator implemented in C++ and Python, with a structure as follows:
 ![](./doc/func.png)
 
+> **macOS / Apple Silicon:** see [MACOS_G1.md](./MACOS_G1.md) for the
+> native G1 setup, persistent stabilizer, repeatable commands and launchers.
+
 ## Directory Structure
 - `simulate`: Simulator implemented based on unitree_sdk2 and mujoco (C++, recommended)
 - `simulate_python`: Simulator implemented based on unitree_sdk2_python and mujoco (Python)
