@@ -25,7 +25,7 @@ from g1_squat_wave import HIGH_KD, HIGH_KP, NEUTRAL, stages
 
 
 SOCKET_PATH = Path("/tmp/unitree_g1_stabilizer.sock")
-FORWARD_STEPS = round(0.8 / CONTROL_DT)
+MOTION_STEPS = round(0.8 / CONTROL_DT)
 SETTLE_STEPS = round(1.6 / CONTROL_DT)
 IDLE_PHASE = 0.35
 STARTUP_TILT_LIMIT_DEG = 15.0
@@ -36,6 +36,17 @@ EMERGENCY_TILT_DEG = 35.0
 EMERGENCY_JOINT_SPEED = 50.0
 POLICY_OBSERVATION_LIMIT = 100.0
 POLICY_ACTION_LIMIT = 3.0
+MOTION_COMMANDS = {
+    "adelante": (np.array([0.25, 0.0, 0.0]), "avanzando"),
+    "atras": (np.array([-0.20, 0.0, 0.0]), "retrocediendo"),
+    "izquierda": (np.array([0.0, 0.18, 0.0]), "desplazandose a la izquierda"),
+    "derecha": (np.array([0.0, -0.18, 0.0]), "desplazandose a la derecha"),
+    "girar_izquierda": (np.array([0.0, 0.0, 0.35]), "girando a la izquierda"),
+    "girar_derecha": (np.array([0.0, 0.0, -0.35]), "girando a la derecha"),
+}
+# Sentadilla moderada compatible con la postura base de la politica. La
+# demostracion autonoma conserva por separado su sentadilla profunda.
+MENU_SQUAT_OFFSET = np.array([-0.08, 0.0, 0.0, 0.15, -0.07, 0.0] * 2)
 
 
 class StabilizerService:
@@ -69,7 +80,9 @@ class StabilizerService:
         self.policy_step = 0
         self.gait_step = 0
 
-        self.forward_remaining = 0
+        self.motion_remaining = 0
+        self.motion_command = np.zeros(3)
+        self.motion_label = ""
         self.settle_remaining = 0
         self.pending_wave = False
         self.wave_stages = []
@@ -78,6 +91,12 @@ class StabilizerService:
         self.upper_start = NEUTRAL[12:].copy()
         self.upper_target = NEUTRAL[12:].copy()
         self.upper_current = NEUTRAL[12:].copy()
+        self.squat_stages = []
+        self.squat_index = 0
+        self.squat_step = 0
+        self.lower_override_start = np.zeros(12)
+        self.lower_override_target = np.zeros(12)
+        self.lower_override_current = np.zeros(12)
         self.running = True
         self.emergency_reason = None
         self.unstable_steps = 0
@@ -91,10 +110,11 @@ class StabilizerService:
 
     def busy(self):
         return bool(
-            self.forward_remaining
+            self.motion_remaining
             or self.settle_remaining
             or self.pending_wave
             or self.wave_stages
+            or self.squat_stages
         )
 
     def state_error(self, snapshot):
@@ -124,10 +144,11 @@ class StabilizerService:
             print(f"[EMERGENCIA] {reason}")
             print("[EMERGENCIA] Activando amortiguacion segura")
         self.emergency_reason = reason
-        self.forward_remaining = 0
+        self.motion_remaining = 0
         self.settle_remaining = 0
         self.pending_wave = False
         self.wave_stages = []
+        self.squat_stages = []
         self.controller.publish_safe_damping()
 
     def status(self):
@@ -139,10 +160,12 @@ class StabilizerService:
             )
         if state_error:
             return "estado no seguro: " + state_error
-        if self.forward_remaining:
-            phase = "caminando"
+        if self.motion_remaining:
+            phase = self.motion_label
         elif self.settle_remaining:
             phase = "estabilizando"
+        elif self.squat_stages:
+            phase = "haciendo una sentadilla"
         elif self.wave_stages:
             phase = "saludando"
         else:
@@ -193,17 +216,33 @@ class StabilizerService:
             self.unstable_steps = 0
         return current_tilt
 
-    def start_steps(self, then_wave=False):
+    def start_motion(self, command_name, then_wave=False):
         # Cada orden debe empezar al principio del ciclo de marcha. Antes se
         # reutilizaba la fase global del estabilizador y algunas ordenes
         # comenzaban a mitad de zancada, moviendo los pies casi en el lugar.
         self.gait_step = 0
         self.action.fill(0.0)
         self.lower_target = POLICY_DEFAULT.copy()
-        self.forward_remaining = FORWARD_STEPS
+        command, label = MOTION_COMMANDS[command_name]
+        self.motion_command = command.copy()
+        self.motion_label = label
+        self.motion_remaining = MOTION_STEPS
         self.settle_remaining = SETTLE_STEPS
         self.pending_wave = then_wave
-        print("[Comando] Dando dos pasos hacia adelante")
+        print(f"[Comando] {label.capitalize()}")
+
+    def start_squat(self):
+        self.squat_stages = [
+            ("bajando", 1.20, MENU_SQUAT_OFFSET),
+            ("sosteniendo", 0.50, MENU_SQUAT_OFFSET),
+            ("subiendo", 1.20, np.zeros(12)),
+        ]
+        self.squat_index = 0
+        self.squat_step = 0
+        self.lower_override_start = np.zeros(12)
+        self.lower_override_current = self.lower_override_start.copy()
+        self.lower_override_target = self.squat_stages[0][2].copy()
+        print("[Comando] Comenzando la sentadilla")
 
     def start_wave(self):
         self.wave_stages = stages("saludo")
@@ -227,16 +266,29 @@ class StabilizerService:
         safe, reason = self.command_is_safe()
         if not safe:
             return "ERROR comando rechazado: " + reason
-        if request in ("pasos", "caminar"):
-            self.start_steps()
-            return "OK comando pasos aceptado"
+        aliases = {
+            "pasos": "adelante",
+            "caminar": "adelante",
+            "encarar_izquierda": "girar_izquierda",
+            "encarar_derecha": "girar_derecha",
+        }
+        request = aliases.get(request, request)
+        if request in MOTION_COMMANDS:
+            self.start_motion(request)
+            return f"OK comando {request} aceptado"
+        if request == "sentadilla":
+            self.start_squat()
+            return "OK comando sentadilla aceptado"
         if request == "saludo":
             self.start_wave()
             return "OK comando saludo aceptado"
         if request in ("actividad", "rutina"):
-            self.start_steps(then_wave=True)
+            self.start_motion("adelante", then_wave=True)
             return "OK actividad aceptada: pasos y saludo"
-        return "ERROR usa: actividad, pasos, saludo, estado o salir"
+        return (
+            "ERROR usa: adelante, atras, izquierda, derecha, "
+            "girar_izquierda, girar_derecha, sentadilla, saludo, estado o salir"
+        )
 
     def poll_commands(self):
         while True:
@@ -272,6 +324,31 @@ class StabilizerService:
         self.wave_step = 0
         self.upper_start = self.upper_current.copy()
         self.upper_target = self.wave_stages[self.wave_index][2][12:].copy()
+
+    def update_squat(self):
+        if not self.squat_stages:
+            return
+        name, duration, _ = self.squat_stages[self.squat_index]
+        steps_count = max(1, round(duration / CONTROL_DT))
+        self.squat_step += 1
+        value = min(1.0, self.squat_step / steps_count)
+        blend = 10 * value**3 - 15 * value**4 + 6 * value**5
+        self.lower_override_current = self.lower_override_start + (
+            self.lower_override_target - self.lower_override_start
+        ) * blend
+        if self.squat_step < steps_count:
+            return
+
+        print(f"[Fase] Sentadilla: {name}")
+        self.squat_index += 1
+        if self.squat_index >= len(self.squat_stages):
+            self.squat_stages = []
+            self.lower_override_current = np.zeros(12)
+            print("[OK] Sentadilla terminada; sigo equilibrando al G1")
+            return
+        self.squat_step = 0
+        self.lower_override_start = self.lower_override_current.copy()
+        self.lower_override_target = self.squat_stages[self.squat_index][2].copy()
 
     def update_policy(self, command, gait_active):
         snapshot = self.controller.snapshot()
@@ -340,24 +417,28 @@ class StabilizerService:
 
                 command = np.zeros(3)
                 gait_active = bool(
-                    self.forward_remaining or self.settle_remaining
+                    self.motion_remaining or self.settle_remaining
                 )
-                if self.forward_remaining:
-                    command[0] = 0.25
-                    self.forward_remaining -= 1
-                    if not self.forward_remaining:
+                if self.motion_remaining:
+                    command[:] = self.motion_command
+                    self.motion_remaining -= 1
+                    if not self.motion_remaining:
                         print("[Fase] Frenando y recuperando equilibrio")
                 elif self.settle_remaining:
                     self.settle_remaining -= 1
                     if not self.settle_remaining:
-                        print("[OK] Dos pasos terminados")
+                        print(f"[OK] Movimiento terminado: {self.motion_label}")
                         if self.pending_wave:
                             self.pending_wave = False
                             self.start_wave()
 
                 self.update_upper_body()
+                self.update_squat()
                 target = np.empty(NUM_MOTORS)
-                target[:12] = self.lower_target
+                if self.squat_stages:
+                    target[:12] = self.lower_target + self.lower_override_current
+                else:
+                    target[:12] = self.lower_target
                 target[12:] = self.upper_current
                 try:
                     self.controller.send(target, self.kp, self.kd)

@@ -63,7 +63,18 @@ Terminal 2 — iniciar la política de equilibrio y dejarla ejecutándose:
 ./iniciar_estabilizador_g1_mac.command
 ```
 
-Terminal 3 — enviar una actividad cada vez que se desee:
+Terminal 3 — abrir el menu interactivo recomendado:
+
+```bash
+./menu_g1_mac.command
+```
+
+El menu acepta una tecla por movimiento: `W/S/A/D` (o las flechas) desplazan
+al robot, `Q/E` cambian hacia donde mira, `C` hace una sentadilla moderada,
+`H` saluda e `I` muestra el estado. `Esc` cierra solamente el menu; el
+simulador y el estabilizador siguen funcionando.
+
+Como alternativa, se puede enviar una actividad directamente:
 
 ```bash
 ./mandar_comando_g1_mac.command actividad
@@ -74,6 +85,12 @@ se aceptan órdenes individuales:
 
 ```bash
 ./mandar_comando_g1_mac.command pasos
+./mandar_comando_g1_mac.command atras
+./mandar_comando_g1_mac.command izquierda
+./mandar_comando_g1_mac.command derecha
+./mandar_comando_g1_mac.command girar_izquierda
+./mandar_comando_g1_mac.command girar_derecha
+./mandar_comando_g1_mac.command sentadilla
 ./mandar_comando_g1_mac.command saludo
 ./mandar_comando_g1_mac.command estado
 ./mandar_comando_g1_mac.command salir
@@ -86,7 +103,8 @@ para terminar el simulador. No hay que cerrar la Terminal completa.
 
 Durante el arranque, la banda sostiene temporalmente el torso mientras el
 controlador valida la orientación y adopta la postura inicial. Solo se libera
-después de recibir comandos continuos durante cuatro segundos. Un comando
+después de recibir comandos continuos durante siete segundos: tres para adoptar
+la postura y cuatro para estabilizarla. Un comando
 aislado o un controlador que falla al arrancar no libera la banda.
 
 El estabilizador rechaza actividades si el G1 supera 20 grados de inclinación.
@@ -105,10 +123,10 @@ descarta la última postura rígida y aplica solamente amortiguación. Esto evit
 que un controlador cerrado o bloqueado continúe forzando las articulaciones.
 El comando `estado` informa tanto la inclinación actual como la máxima.
 
-`actividad` realiza dos pasos y un saludo. La sentadilla profunda todavía no
-se envía al estabilizador porque la política de locomoción no fue entrenada
-para modificar la altura del torso; forzar esa referencia haría que el G1
-salga de la distribución de entrenamiento y pueda caer.
+`actividad` realiza dos pasos y un saludo. El menu utiliza una sentadilla
+moderada, con transiciones suaves y las mismas protecciones del estabilizador.
+La sentadilla profunda queda reservada para la demostración autónoma porque
+es menos robusta ante perturbaciones.
 
 ### Modo de bajo consumo para macOS
 
@@ -133,11 +151,17 @@ Terminal 2:
 Terminal 3 utiliza exactamente los mismos comandos:
 
 ```bash
+./menu_g1_mac.command
+# o, para enviar una orden sin abrir el menu:
 ./mandar_comando_g1_mac.command saludo
 ./mandar_comando_g1_mac.command pasos
 ./mandar_comando_g1_mac.command actividad
 ./mandar_comando_g1_mac.command estado
 ```
+
+El menu y la linea de comandos usan una unica funcion de envio local. Esto
+permite conectar mas adelante reconocimiento de voz sin modificar el
+estabilizador ni duplicar los movimientos; esta version no incorpora audio.
 
 En la Mac de prueba, una medición representativa bajó el simulador de 139% a
 105% de CPU y el estabilizador de 74% a 40%; la memoria del simulador bajó de
