@@ -5,3 +5,4 @@
 **/install/
 **/.DS_Store
 simulate/mujoco
+simulate_python/MUJOCO_LOG.TXT

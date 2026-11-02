@@ -4,6 +4,7 @@ import numpy as np
 import pygame
 import sys
 import struct
+import time
 
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelPublisher
 
@@ -31,6 +32,8 @@ TOPIC_WIRELESS_CONTROLLER = "rt/wirelesscontroller"
 MOTOR_SENSOR_NUM = 3
 NUM_MOTOR_IDL_GO = 20
 NUM_MOTOR_IDL_HG = 35
+LOWCMD_TIMEOUT_S = 0.25
+WATCHDOG_DAMPING = 2.0
 
 class UnitreeSdk2Bridge:
 
@@ -48,6 +51,8 @@ class UnitreeSdk2Bridge:
         self.joystick = None
         self.lowcmd_received = False
         self.low_cmd = None
+        self.last_lowcmd_time = None
+        self.lowcmd_timed_out = False
         self._closed = False
         self.sim_step = 0
 
@@ -116,6 +121,10 @@ class UnitreeSdk2Bridge:
     def LowCmdHandler(self, msg: LowCmd_):
         if self.mj_data != None:
             self.lowcmd_received = True
+            self.last_lowcmd_time = time.monotonic()
+            if self.lowcmd_timed_out:
+                print("LowCmd watchdog: controller reconnected")
+                self.lowcmd_timed_out = False
             motors = msg.motor_cmd[: self.num_motor]
             # Guardar una copia numerica. El torque se recalcula en cada paso
             # fisico, no solamente cuando el hilo DDS recibe un mensaje.
@@ -131,12 +140,49 @@ class UnitreeSdk2Bridge:
         command = self.low_cmd
         if command is None or self.mj_data is None:
             return
+        if (
+            self.last_lowcmd_time is None
+            or time.monotonic() - self.last_lowcmd_time > LOWCMD_TIMEOUT_S
+        ):
+            # Si el controlador termina o se bloquea, no conservar para
+            # siempre su ultima postura rígida. Solo disipar movimiento.
+            dq = self.mj_data.sensordata[
+                self.num_motor : 2 * self.num_motor
+            ]
+            low, high = self.mj_model.actuator_ctrlrange.T
+            damping = np.nan_to_num(
+                -WATCHDOG_DAMPING * dq,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
+            self.mj_data.ctrl[:] = np.clip(damping, low, high)
+            if not self.lowcmd_timed_out:
+                print("LowCmd watchdog: safe damping enabled")
+                self.lowcmd_timed_out = True
+            return
         q_target, dq_target, kp, kd, tau = command
         q = self.mj_data.sensordata[: self.num_motor]
         dq = self.mj_data.sensordata[self.num_motor : 2 * self.num_motor]
         control = tau + kp * (q_target - q) + kd * (dq_target - dq)
+        if not np.all(np.isfinite(control)):
+            control = np.nan_to_num(
+                -WATCHDOG_DAMPING * dq,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
+            if not self.lowcmd_timed_out:
+                print("LowCmd watchdog: invalid command, safe damping enabled")
+                self.lowcmd_timed_out = True
         low, high = self.mj_model.actuator_ctrlrange.T
         self.mj_data.ctrl[:] = np.clip(control, low, high)
+
+    def LowCmdIsFresh(self):
+        return bool(
+            self.last_lowcmd_time is not None
+            and time.monotonic() - self.last_lowcmd_time <= LOWCMD_TIMEOUT_S
+        )
 
     def StepCompleted(self):
         self.sim_step += 1

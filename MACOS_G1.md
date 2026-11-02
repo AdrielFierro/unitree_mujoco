@@ -82,6 +82,29 @@ se aceptan órdenes individuales:
 `salir` detiene el estabilizador. Después se puede cerrar la ventana de MuJoCo
 para terminar el simulador. No hay que cerrar la Terminal completa.
 
+### Protecciones del estabilizador
+
+Durante el arranque, la banda sostiene temporalmente el torso mientras el
+controlador valida la orientación y adopta la postura inicial. Solo se libera
+después de recibir comandos continuos durante cuatro segundos. Un comando
+aislado o un controlador que falla al arrancar no libera la banda.
+
+El estabilizador rechaza actividades si el G1 supera 20 grados de inclinación.
+Si detecta 35 grados, datos no numéricos o una salida inválida de la política,
+cancela la actividad y pasa los motores a amortiguación segura. Este estado no
+intenta levantar al robot desde el suelo: hay que reiniciar MuJoCo y luego el
+estabilizador.
+
+También activa la emergencia si permanece por encima de 25 grados durante
+medio segundo o si alguna articulación alcanza una velocidad extrema. Así se
+permite una corrección breve tras un empujón, pero no se insiste cuando el
+robot claramente no consigue recuperar el equilibrio.
+
+El simulador tiene además un watchdog de 250 ms. Si dejan de llegar comandos,
+descarta la última postura rígida y aplica solamente amortiguación. Esto evita
+que un controlador cerrado o bloqueado continúe forzando las articulaciones.
+El comando `estado` informa tanto la inclinación actual como la máxima.
+
 `actividad` realiza dos pasos y un saludo. La sentadilla profunda todavía no
 se envía al estabilizador porque la política de locomoción no fue entrenada
 para modificar la altura del torso; forzar esa referencia haría que el G1

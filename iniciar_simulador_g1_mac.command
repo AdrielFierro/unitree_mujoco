@@ -25,4 +25,5 @@ echo "Abriendo el G1 en MuJoCo..."
 echo "Deja esta Terminal abierta y ejecuta el estabilizador en otra."
 echo "Cerra la ventana de MuJoCo para terminar."
 export UNITREE_AUTO_RELEASE_BAND=1
+export PYTHONUNBUFFERED=1
 exec "$MJ_PYTHON" unitree_mujoco.py

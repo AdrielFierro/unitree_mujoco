@@ -40,6 +40,7 @@ POLICY_DECIMATION = 10
 FORWARD_SECONDS = 0.8
 SETTLE_SECONDS = 1.6
 FALL_TILT_DEG = 45.0
+SAFE_DAMPING_KD = np.array([4.0] * 15 + [1.0] * 14, dtype=float)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = (
     PROJECT_ROOT
@@ -124,10 +125,14 @@ class DdsController:
         print("[OK] Simulador conectado por DDS")
         return snapshot[0]
 
-    def check_stability(self, quaternion):
+    @staticmethod
+    def tilt_deg(quaternion):
         qw, qx, qy, qz = quaternion
         vertical = 1.0 - 2.0 * (qx * qx + qy * qy)
-        tilt = float(np.degrees(np.arccos(np.clip(vertical, -1.0, 1.0))))
+        return float(np.degrees(np.arccos(np.clip(vertical, -1.0, 1.0))))
+
+    def check_stability(self, quaternion):
+        tilt = self.tilt_deg(quaternion)
         self.max_tilt_deg = max(self.max_tilt_deg, tilt)
         if tilt > FALL_TILT_DEG:
             raise RuntimeError(
@@ -135,7 +140,9 @@ class DdsController:
                 f"({tilt:.1f} grados)."
             )
 
-    def send(self, target, kp, kd):
+        return tilt
+
+    def _publish(self, target, kp, kd):
         self.command.mode_pr = 0
         self.command.mode_machine = self.mode_machine
         for index in range(NUM_MOTORS):
@@ -146,9 +153,51 @@ class DdsController:
         self.command.crc = self.crc.Crc(self.command)
         self.publisher.Write(self.command)
 
+    def publish_safe_damping(self):
+        """Anula referencias rígidas y frena suavemente las articulaciones."""
+        snapshot = self.snapshot()
+        if snapshot is None:
+            target = np.zeros(NUM_MOTORS, dtype=float)
+        else:
+            target = snapshot[0]
+        self._publish(
+            target,
+            np.zeros(NUM_MOTORS, dtype=float),
+            SAFE_DAMPING_KD,
+        )
+
+    def send(self, target, kp, kd):
+        target = np.asarray(target, dtype=float)
+        kp = np.asarray(kp, dtype=float)
+        kd = np.asarray(kd, dtype=float)
+        if not all(
+            values.shape == (NUM_MOTORS,)
+            and np.all(np.isfinite(values))
+            for values in (target, kp, kd)
+        ):
+            self.publish_safe_damping()
+            raise RuntimeError("Comando de motor invalido; se activo amortiguacion segura")
+
         snapshot = self.snapshot()
         if snapshot is not None:
-            self.check_stability(snapshot[2])
+            q, dq, quaternion, gyroscope, _, _ = snapshot
+            if not all(
+                np.all(np.isfinite(values))
+                for values in (q, dq, quaternion, gyroscope)
+            ):
+                self.publish_safe_damping()
+                raise RuntimeError(
+                    "Estado del simulador invalido; se activo amortiguacion segura"
+                )
+            try:
+                self.check_stability(quaternion)
+            except RuntimeError:
+                # La comprobacion ocurre antes de publicar: nunca dejamos como
+                # ultima orden una postura rígida cuando el G1 ya esta caído.
+                self.publish_safe_damping()
+                raise
+
+        self._publish(target, kp, kd)
 
         self.next_tick += CONTROL_DT
         delay = self.next_tick - time.perf_counter()

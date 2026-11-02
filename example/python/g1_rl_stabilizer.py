@@ -3,6 +3,7 @@
 from pathlib import Path
 import os
 import socket
+import time
 
 import numpy as np
 import torch
@@ -26,14 +27,38 @@ SOCKET_PATH = Path("/tmp/unitree_g1_stabilizer.sock")
 FORWARD_STEPS = round(0.8 / CONTROL_DT)
 SETTLE_STEPS = round(1.6 / CONTROL_DT)
 IDLE_PHASE = 0.35
+STARTUP_TILT_LIMIT_DEG = 15.0
+COMMAND_TILT_LIMIT_DEG = 20.0
+UNSTABLE_TILT_DEG = 25.0
+UNSTABLE_TIME_S = 0.5
+EMERGENCY_TILT_DEG = 35.0
+EMERGENCY_JOINT_SPEED = 50.0
+POLICY_OBSERVATION_LIMIT = 100.0
+POLICY_ACTION_LIMIT = 3.0
 
 
 class StabilizerService:
     def __init__(self):
         self.controller = DdsController()
+        self.kp = HIGH_KP.copy()
+        self.kd = HIGH_KD.copy()
+        self.kp[:12] = POLICY_KP
+        self.kd[:12] = POLICY_KD
+
         current = self.controller.wait_for_state()
+        snapshot = self.controller.snapshot()
+        startup_error, startup_tilt = self.state_error(snapshot)
+        if startup_error or startup_tilt > STARTUP_TILT_LIMIT_DEG:
+            self.controller.publish_safe_damping()
+            detail = startup_error or (
+                f"inclinacion inicial {startup_tilt:.1f} grados; "
+                f"el limite es {STARTUP_TILT_LIMIT_DEG:.0f}"
+            )
+            raise RuntimeError(
+                "El G1 no esta en una postura segura para arrancar: " + detail
+            )
         print("[Fase] Adoptando postura inicial")
-        self.controller.transition(current, NEUTRAL, 3.0)
+        self.controller.transition(current, NEUTRAL, 3.0, self.kp, self.kd)
 
         self.policy = torch.jit.load(str(POLICY_PATH), map_location="cpu")
         self.policy.eval()
@@ -42,11 +67,6 @@ class StabilizerService:
         self.observation = np.zeros(47, dtype=np.float32)
         self.policy_step = 0
         self.gait_step = 0
-
-        self.kp = HIGH_KP.copy()
-        self.kd = HIGH_KD.copy()
-        self.kp[:12] = POLICY_KP
-        self.kd[:12] = POLICY_KD
 
         self.forward_remaining = 0
         self.settle_remaining = 0
@@ -58,6 +78,8 @@ class StabilizerService:
         self.upper_target = NEUTRAL[12:].copy()
         self.upper_current = NEUTRAL[12:].copy()
         self.running = True
+        self.emergency_reason = None
+        self.unstable_steps = 0
 
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         if SOCKET_PATH.exists():
@@ -74,7 +96,48 @@ class StabilizerService:
             or self.wave_stages
         )
 
+    def state_error(self, snapshot):
+        if snapshot is None:
+            return "no hay estado DDS", 180.0
+        q, dq, quaternion, gyroscope, _, _ = snapshot
+        if not all(
+            np.all(np.isfinite(values))
+            for values in (q, dq, quaternion, gyroscope)
+        ):
+            return "el estado contiene NaN o Inf", 180.0
+        max_joint_speed = float(np.max(np.abs(dq)))
+        if max_joint_speed > EMERGENCY_JOINT_SPEED:
+            return (
+                f"velocidad articular excesiva: {max_joint_speed:.1f} rad/s",
+                180.0,
+            )
+        tilt = self.controller.tilt_deg(quaternion)
+        self.controller.max_tilt_deg = max(
+            self.controller.max_tilt_deg,
+            tilt,
+        )
+        return None, tilt
+
+    def enter_emergency(self, reason):
+        if self.emergency_reason is None:
+            print(f"[EMERGENCIA] {reason}")
+            print("[EMERGENCIA] Activando amortiguacion segura")
+        self.emergency_reason = reason
+        self.forward_remaining = 0
+        self.settle_remaining = 0
+        self.pending_wave = False
+        self.wave_stages = []
+        self.controller.publish_safe_damping()
+
     def status(self):
+        state_error, current_tilt = self.state_error(self.controller.snapshot())
+        if self.emergency_reason:
+            return (
+                f"EMERGENCIA: {self.emergency_reason}; "
+                "reinicia el simulador y el estabilizador"
+            )
+        if state_error:
+            return "estado no seguro: " + state_error
         if self.forward_remaining:
             phase = "caminando"
         elif self.settle_remaining:
@@ -84,9 +147,50 @@ class StabilizerService:
         else:
             phase = "parado y equilibrando"
         return (
-            f"{phase}; inclinacion maxima="
+            f"{phase}; inclinacion actual={current_tilt:.1f} grados; "
+            "inclinacion maxima="
             f"{self.controller.max_tilt_deg:.1f} grados"
         )
+
+    def command_is_safe(self):
+        state_error, tilt = self.state_error(self.controller.snapshot())
+        if state_error:
+            self.enter_emergency(state_error)
+            return False, state_error
+        if tilt >= EMERGENCY_TILT_DEG:
+            reason = f"caida detectada: {tilt:.1f} grados"
+            self.enter_emergency(reason)
+            return False, reason
+        if tilt > COMMAND_TILT_LIMIT_DEG:
+            return False, (
+                f"el G1 esta inclinado {tilt:.1f} grados; "
+                f"espera a que baje de {COMMAND_TILT_LIMIT_DEG:.0f}"
+            )
+        return True, None
+
+    def monitor_safety(self):
+        state_error, current_tilt = self.state_error(
+            self.controller.snapshot()
+        )
+        if state_error:
+            self.enter_emergency(state_error)
+        elif current_tilt >= EMERGENCY_TILT_DEG:
+            self.enter_emergency(
+                f"caida detectada: {current_tilt:.1f} grados"
+            )
+        elif current_tilt > UNSTABLE_TILT_DEG:
+            self.unstable_steps += 1
+            if self.unstable_steps >= round(
+                UNSTABLE_TIME_S / CONTROL_DT
+            ):
+                self.enter_emergency(
+                    "no recupero el equilibrio durante "
+                    f"{UNSTABLE_TIME_S:.1f} segundos "
+                    f"({current_tilt:.1f} grados)"
+                )
+        else:
+            self.unstable_steps = 0
+        return current_tilt
 
     def start_steps(self, then_wave=False):
         # Cada orden debe empezar al principio del ciclo de marcha. Antes se
@@ -115,8 +219,13 @@ class StabilizerService:
         if request in ("salir", "cerrar"):
             self.running = False
             return "OK cerrando el estabilizador"
+        if self.emergency_reason:
+            return "ERROR " + self.status()
         if self.busy():
             return "OCUPADO " + self.status()
+        safe, reason = self.command_is_safe()
+        if not safe:
+            return "ERROR comando rechazado: " + reason
         if request in ("pasos", "caminar"):
             self.start_steps()
             return "OK comando pasos aceptado"
@@ -168,12 +277,23 @@ class StabilizerService:
         if snapshot is None:
             return
         q, dq, quaternion, gyroscope, _, _ = snapshot
+        if not all(
+            np.all(np.isfinite(values))
+            for values in (q, dq, quaternion, gyroscope, self.action)
+        ):
+            raise RuntimeError("estado u accion de politica con NaN o Inf")
         self.observation[:3] = gyroscope * 0.25
         self.observation[3:6] = gravity_orientation(quaternion)
         self.observation[6:9] = command * POLICY_COMMAND_SCALE
         self.observation[9:21] = q[:12] - POLICY_DEFAULT
         self.observation[21:33] = dq[:12] * 0.05
         self.observation[33:45] = self.action
+        np.clip(
+            self.observation,
+            -POLICY_OBSERVATION_LIMIT,
+            POLICY_OBSERVATION_LIMIT,
+            out=self.observation,
+        )
         if gait_active:
             phases = [(self.gait_step * CONTROL_DT % 0.8) / 0.8]
         else:
@@ -192,6 +312,14 @@ class StabilizerService:
                 tensor = torch.from_numpy(self.observation).unsqueeze(0)
                 actions.append(self.policy(tensor).numpy().squeeze())
         self.action = np.mean(actions, axis=0)
+        if not np.all(np.isfinite(self.action)):
+            raise RuntimeError("la politica produjo NaN o Inf")
+        np.clip(
+            self.action,
+            -POLICY_ACTION_LIMIT,
+            POLICY_ACTION_LIMIT,
+            out=self.action,
+        )
         self.lower_target = self.action * 0.25 + POLICY_DEFAULT
 
     def run(self):
@@ -200,6 +328,13 @@ class StabilizerService:
         try:
             while self.running:
                 self.poll_commands()
+                self.monitor_safety()
+
+                if self.emergency_reason:
+                    self.controller.publish_safe_damping()
+                    time.sleep(CONTROL_DT)
+                    continue
+
                 command = np.zeros(3)
                 gait_active = bool(
                     self.forward_remaining or self.settle_remaining
@@ -221,16 +356,25 @@ class StabilizerService:
                 target = np.empty(NUM_MOTORS)
                 target[:12] = self.lower_target
                 target[12:] = self.upper_current
-                self.controller.send(target, self.kp, self.kd)
+                try:
+                    self.controller.send(target, self.kp, self.kd)
+                except RuntimeError as error:
+                    self.enter_emergency(str(error))
+                    continue
 
                 if self.policy_step % POLICY_DECIMATION == 0:
-                    self.update_policy(command, gait_active)
+                    try:
+                        self.update_policy(command, gait_active)
+                    except RuntimeError as error:
+                        self.enter_emergency(str(error))
+                        continue
                 if gait_active:
                     self.gait_step += 1
                 self.policy_step += 1
         except KeyboardInterrupt:
             print("\n[AVISO] Estabilizador detenido.")
         finally:
+            self.controller.publish_safe_damping()
             self.server.close()
             if SOCKET_PATH.exists():
                 os.unlink(SOCKET_PATH)

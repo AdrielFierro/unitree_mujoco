@@ -26,10 +26,10 @@ if config.ENABLE_ELASTIC_BAND:
     else:
         band_attached_link = mj_model.body("base_link").id
     if config.AUTO_RELEASE_ELASTIC_BAND:
-        # En el modo autonomo, el PD interno se aplica antes del primer paso
-        # fisico. No hace falta sostener el torso y los pies conservan toda su
-        # carga contra el suelo desde el inicio.
-        elastic_band.enable = False
+        # El lanzador DDS mantiene la banda solo durante el arranque. Se
+        # libera varios segundos despues del primer LowCmd, cuando la politica
+        # ya valido la postura y esta enviando referencias continuamente.
+        elastic_band.enable = True
     viewer = mujoco.viewer.launch_passive(
         mj_model, mj_data, key_callback=elastic_band.MujuocoKeyCallback
     )
@@ -53,7 +53,7 @@ def SimulationThread():
     try:
         ChannelFactoryInitialize(config.DOMAIN_ID, config.INTERFACE)
         unitree = UnitreeSdk2Bridge(mj_model, mj_data)
-        band_auto_released = config.AUTO_RELEASE_ELASTIC_BAND
+        band_auto_released = False
         band_release_steps = None
 
         # Control interno de arranque: mantiene las articulaciones en la postura
@@ -86,11 +86,15 @@ def SimulationThread():
             with locker:
                 if config.ENABLE_ELASTIC_BAND:
                     if config.AUTO_RELEASE_ELASTIC_BAND and not band_auto_released:
-                        if unitree.lowcmd_received and band_release_steps is None:
-                            band_release_steps = max(
-                                1, round(0.5 / mj_model.opt.timestep)
-                            )
-                        if band_release_steps is not None:
+                        if unitree.LowCmdIsFresh():
+                            if band_release_steps is None:
+                                band_release_steps = max(
+                                    1,
+                                    round(
+                                        config.AUTO_RELEASE_DELAY_S
+                                        / mj_model.opt.timestep
+                                    ),
+                                )
                             band_release_steps -= 1
                             if band_release_steps <= 0:
                                 elastic_band.enable = False
@@ -99,6 +103,11 @@ def SimulationThread():
                                     "Elastic band: automatically released "
                                     "by controller"
                                 )
+                        else:
+                            # Un LowCmd aislado (por ejemplo la orden segura
+                            # de un controlador que rechazo el arranque) no
+                            # debe liberar el soporte inicial.
+                            band_release_steps = None
                     band_force = elastic_band.Advance(
                         mj_data.qpos[:3], mj_data.qvel[:3]
                     )

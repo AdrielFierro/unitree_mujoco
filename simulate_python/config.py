@@ -17,6 +17,9 @@ ENABLE_ELASTIC_BAND = True # Virtual spring band, used for lifting h1
 # entorno. La banda sostiene al G1 durante el arranque y se suelta cuando llega
 # el primer comando del controlador sin banda.
 AUTO_RELEASE_ELASTIC_BAND = os.environ.get("UNITREE_AUTO_RELEASE_BAND") == "1"
+# Dar tiempo a que el controlador valide el estado, complete su transicion
+# inicial y empiece a ejecutar la politica antes de retirar el soporte.
+AUTO_RELEASE_DELAY_S = 4.0
 
 SIMULATE_DT = 0.005  # Need to be larger than the runtime of viewer.sync()
 # El control de pie sin banda usa rigideces altas. Con 5 ms la integracion del
