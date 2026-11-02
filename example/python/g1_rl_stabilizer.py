@@ -10,6 +10,7 @@ import torch
 
 from g1_rl_activity import (
     CONTROL_DT,
+    LOW_POWER_MODE,
     NUM_MOTORS,
     POLICY_COMMAND_SCALE,
     POLICY_DECIMATION,
@@ -323,6 +324,8 @@ class StabilizerService:
         self.lower_target = self.action * 0.25 + POLICY_DEFAULT
 
     def run(self):
+        if LOW_POWER_MODE:
+            print("[OK] Modo bajo consumo: control 250 Hz, politica 50 Hz")
         print("[OK] Estabilizador activo y esperando comandos.")
         print(f"[OK] Socket local: {SOCKET_PATH}")
         try:

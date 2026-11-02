@@ -5,6 +5,7 @@ restringida al dominio DDS 1 y a la interfaz loopback local.
 """
 
 import argparse
+import os
 from pathlib import Path
 import sys
 import threading
@@ -34,9 +35,11 @@ from g1_squat_wave import (
 
 DOMAIN_ID = 1
 INTERFACE = "lo0" if sys.platform == "darwin" else "lo"
-CONTROL_DT = 0.002
+LOW_POWER_MODE = os.environ.get("UNITREE_LOW_POWER") == "1"
+CONTROL_DT = 0.004 if LOW_POWER_MODE else 0.002
 NUM_MOTORS = 29
-POLICY_DECIMATION = 10
+# La politica conserva su periodo entrenado de 20 ms en ambos modos.
+POLICY_DECIMATION = round(0.020 / CONTROL_DT)
 FORWARD_SECONDS = 0.8
 SETTLE_SECONDS = 1.6
 FALL_TILT_DEG = 45.0

@@ -31,10 +31,19 @@ if config.ENABLE_ELASTIC_BAND:
         # ya valido la postura y esta enviando referencias continuamente.
         elastic_band.enable = True
     viewer = mujoco.viewer.launch_passive(
-        mj_model, mj_data, key_callback=elastic_band.MujuocoKeyCallback
+        mj_model,
+        mj_data,
+        key_callback=elastic_band.MujuocoKeyCallback,
+        show_left_ui=not config.LOW_POWER_MODE,
+        show_right_ui=not config.LOW_POWER_MODE,
     )
 else:
-    viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
+    viewer = mujoco.viewer.launch_passive(
+        mj_model,
+        mj_data,
+        show_left_ui=not config.LOW_POWER_MODE,
+        show_right_ui=not config.LOW_POWER_MODE,
+    )
 
 mj_model.opt.timestep = (
     config.UNASSISTED_G1_DT
@@ -45,6 +54,11 @@ num_motor_ = mj_model.nu
 dim_motor_sensor_ = 3 * num_motor_
 
 time.sleep(0.2)
+if config.LOW_POWER_MODE:
+    print(
+        "Low power mode: flat scene, 25 FPS, 250 Hz LowState, "
+        "50 Hz HighState"
+    )
 
 
 def SimulationThread():

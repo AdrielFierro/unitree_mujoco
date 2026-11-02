@@ -110,6 +110,45 @@ se envía al estabilizador porque la política de locomoción no fue entrenada
 para modificar la altura del torso; forzar esa referencia haría que el G1
 salga de la distribución de entrenamiento y pueda caer.
 
+### Modo de bajo consumo para macOS
+
+Este modo conserva la física de MuJoCo a 500 Hz y la política neuronal a
+50 Hz, pero reduce el control y `LowState` a 250 Hz, `HighState` a 50 Hz y el
+visor a 25 FPS. También desactiva el publicador de joystick, oculta los paneles
+laterales y utiliza una escena plana de 74 geometrías en lugar de las 179 de la
+escena completa.
+
+Terminal 1:
+
+```bash
+./iniciar_simulador_g1_bajo_consumo_mac.command
+```
+
+Terminal 2:
+
+```bash
+./iniciar_estabilizador_g1_bajo_consumo_mac.command
+```
+
+Terminal 3 utiliza exactamente los mismos comandos:
+
+```bash
+./mandar_comando_g1_mac.command saludo
+./mandar_comando_g1_mac.command pasos
+./mandar_comando_g1_mac.command actividad
+./mandar_comando_g1_mac.command estado
+```
+
+En la Mac de prueba, una medición representativa bajó el simulador de 139% a
+105% de CPU y el estabilizador de 74% a 40%; la memoria del simulador bajó de
+aproximadamente 1,39 GB a 1,08 GB. Los valores varían con el tamaño de la
+ventana y el momento de la medición.
+
+Se validaron dos actividades consecutivas. El robot terminó con 1,8 grados de
+inclinación y la máxima observada fue de 25,1 grados. Una variante más agresiva de
+100 Hz fue descartada porque activó la protección de caída. Para ensayos con
+empujones fuertes o máxima robustez, conviene seguir usando el modo normal.
+
 ### Ejecución autónoma en un solo proceso
 
 La demostración anterior, que incluye sentadilla, sigue disponible como modo

@@ -2,8 +2,12 @@ import os
 import sys
 
 
+LOW_POWER_MODE = os.environ.get("UNITREE_LOW_POWER") == "1"
 ROBOT = "g1" # Robot name, "go2", "b2", "b2w", "h1", "go2w", "g1"
-ROBOT_SCENE = "../unitree_robots/" + ROBOT + "/scene.xml" # Robot scene
+if LOW_POWER_MODE and ROBOT == "g1":
+    ROBOT_SCENE = "../unitree_robots/g1/scene_macos_flat.xml"
+else:
+    ROBOT_SCENE = "../unitree_robots/" + ROBOT + "/scene.xml" # Robot scene
 DOMAIN_ID = 1 # Domain id
 INTERFACE = "lo0" if sys.platform == "darwin" else "lo" # Loopback interface
 
@@ -11,7 +15,7 @@ USE_JOYSTICK = 0 if sys.platform == "darwin" else 1 # Linux joystick device is /
 JOYSTICK_TYPE = "xbox" # support "xbox" and "switch" gamepad layout
 JOYSTICK_DEVICE = 0 # Joystick number
 
-PRINT_SCENE_INFORMATION = True # Print link, joint and sensors information of robot
+PRINT_SCENE_INFORMATION = not LOW_POWER_MODE # Print link, joint and sensor information
 ENABLE_ELASTIC_BAND = True # Virtual spring band, used for lifting h1
 # El lanzador especial de macOS activa esta opcion mediante una variable de
 # entorno. La banda sostiene al G1 durante el arranque y se suelta cuando llega
@@ -26,4 +30,7 @@ SIMULATE_DT = 0.005  # Need to be larger than the runtime of viewer.sync()
 # bipedo se vuelve inestable; 2 ms coincide con el paso del modelo G1 y del
 # simulador DDS validado.
 UNASSISTED_G1_DT = 0.002
-VIEWER_DT = 0.02  # 50 fps for viewer
+VIEWER_DT = 0.04 if LOW_POWER_MODE else 0.02  # 25 or 50 fps
+LOWSTATE_DT = 0.004 if LOW_POWER_MODE else None  # 250 Hz or physics rate
+HIGHSTATE_DT = 0.02 if LOW_POWER_MODE else None  # 50 Hz or physics rate
+PUBLISH_WIRELESS_CONTROLLER = not LOW_POWER_MODE

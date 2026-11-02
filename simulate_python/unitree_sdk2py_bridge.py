@@ -71,7 +71,9 @@ class UnitreeSdk2Bridge:
         self.low_state_puber = ChannelPublisher(TOPIC_LOWSTATE, LowState_)
         self.low_state_puber.Init()
         self.lowStateThread = RecurrentThread(
-            interval=self.dt, target=self.PublishLowState, name="sim_lowstate"
+            interval=config.LOWSTATE_DT or self.dt,
+            target=self.PublishLowState,
+            name="sim_lowstate",
         )
         self.lowStateThread.Start()
 
@@ -79,21 +81,27 @@ class UnitreeSdk2Bridge:
         self.high_state_puber = ChannelPublisher(TOPIC_HIGHSTATE, SportModeState_)
         self.high_state_puber.Init()
         self.HighStateThread = RecurrentThread(
-            interval=self.dt, target=self.PublishHighState, name="sim_highstate"
+            interval=config.HIGHSTATE_DT or self.dt,
+            target=self.PublishHighState,
+            name="sim_highstate",
         )
         self.HighStateThread.Start()
 
-        self.wireless_controller = unitree_go_msg_dds__WirelessController_()
-        self.wireless_controller_puber = ChannelPublisher(
-            TOPIC_WIRELESS_CONTROLLER, WirelessController_
-        )
-        self.wireless_controller_puber.Init()
-        self.WirelessControllerThread = RecurrentThread(
-            interval=0.01,
-            target=self.PublishWirelessController,
-            name="sim_wireless_controller",
-        )
-        self.WirelessControllerThread.Start()
+        self.wireless_controller = None
+        self.wireless_controller_puber = None
+        self.WirelessControllerThread = None
+        if config.PUBLISH_WIRELESS_CONTROLLER:
+            self.wireless_controller = unitree_go_msg_dds__WirelessController_()
+            self.wireless_controller_puber = ChannelPublisher(
+                TOPIC_WIRELESS_CONTROLLER, WirelessController_
+            )
+            self.wireless_controller_puber.Init()
+            self.WirelessControllerThread = RecurrentThread(
+                interval=0.01,
+                target=self.PublishWirelessController,
+                name="sim_wireless_controller",
+            )
+            self.WirelessControllerThread.Start()
 
         self.low_cmd_suber = ChannelSubscriber(TOPIC_LOWCMD, LowCmd_)
         self.low_cmd_suber.Init(self.LowCmdHandler, 10)
@@ -201,11 +209,13 @@ class UnitreeSdk2Bridge:
             self.HighStateThread,
             self.WirelessControllerThread,
         ):
-            worker.Wait(timeout=1.0)
+            if worker is not None:
+                worker.Wait(timeout=1.0)
 
         self.low_state_puber.Close()
         self.high_state_puber.Close()
-        self.wireless_controller_puber.Close()
+        if self.wireless_controller_puber is not None:
+            self.wireless_controller_puber.Close()
         self.mj_data = None
 
         if self.joystick is not None:
