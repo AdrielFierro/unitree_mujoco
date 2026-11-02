@@ -1,10 +1,13 @@
 # G1 nativo en macOS con MuJoCo
 
 Esta adaptación ejecuta el G1 de forma nativa en macOS, sin Docker. El modo
-autónomo no necesita banda elástica ni un segundo proceso controlador. Para
-caminar utiliza la política neuronal preentrenada oficial de
-[`unitree_rl_gym`](https://github.com/unitreerobotics/unitree_rl_gym), incluida
-como submódulo y distribuida por Unitree bajo licencia BSD-3-Clause.
+autónomo no necesita banda elástica ni un segundo proceso controlador. El
+estabilizador persistente usa ahora la política G1 de 29 articulaciones sin
+reloj de marcha de
+[`RoboJuDo`](https://github.com/HansZ8/RoboJuDo), basada en
+[`unitree_rl_lab`](https://github.com/unitreerobotics/unitree_rl_lab). Esta
+política fue entrenada tanto para caminar como para permanecer quieta: al
+recibir velocidad cero no continúa alternando los pies.
 
 La demostración realiza esta secuencia:
 
@@ -74,9 +77,9 @@ al robot, `Q/E` cambian hacia donde mira, `C` hace una sentadilla moderada,
 `H` saluda e `I` muestra el estado. `Esc` cierra solamente el menu; el
 simulador y el estabilizador siguen funcionando.
 
-Cada orden de desplazamiento ejecuta un unico ciclo de marcha, con uno o dos
-pasos marcados. Durante la recuperacion se detiene el ciclo para evitar los
-pasitos pequenos que antes aparecian al final del movimiento.
+Cada orden de desplazamiento mantiene la velocidad solicitada durante 0,8 s y
+luego vuelve a comando cero. La política decide la pisada y recupera la postura
+sin el promedio artificial de fases que usaba la versión anterior.
 
 Como alternativa, se puede enviar una actividad directamente:
 
@@ -132,7 +135,7 @@ descarta la última postura rígida y aplica solamente amortiguación. Esto evit
 que un controlador cerrado o bloqueado continúe forzando las articulaciones.
 El comando `estado` informa tanto la inclinación actual como la máxima.
 
-`actividad` realiza dos pasos y un saludo. El menu utiliza una sentadilla
+`actividad` realiza un desplazamiento hacia adelante y un saludo. El menu utiliza una sentadilla
 moderada, con transiciones suaves y las mismas protecciones del estabilizador.
 La sentadilla profunda queda reservada para la demostración autónoma porque
 es menos robusta ante perturbaciones.
@@ -177,10 +180,10 @@ En la Mac de prueba, una medición representativa bajó el simulador de 139% a
 aproximadamente 1,39 GB a 1,08 GB. Los valores varían con el tamaño de la
 ventana y el momento de la medición.
 
-Se validaron dos actividades consecutivas. El robot terminó con 1,8 grados de
-inclinación y la máxima observada fue de 25,1 grados. Una variante más agresiva de
-100 Hz fue descartada porque activó la protección de caída. Para ensayos con
-empujones fuertes o máxima robustez, conviene seguir usando el modo normal.
+La política neuronal sigue ejecutándose a 50 Hz también en reposo; el modo de
+bajo consumo reduce el transporte DDS y el visor, no la frecuencia aprendida
+por el controlador. Para ensayos con empujones fuertes o máxima robustez,
+conviene seguir usando el modo normal.
 
 ### Ejecución autónoma en un solo proceso
 
@@ -220,11 +223,20 @@ automáticamente cuando comienza a publicar el estabilizador.
 ## Alcance y seguridad
 
 Durante la marcha los controladores no inyectan `xfrc_applied` ni ninguna
-fuerza externa automática: la
-política recibe velocidad angular, orientación gravitatoria, comando de
-velocidad, posiciones y velocidades articulares, fase de marcha y su acción
-anterior. Su salida controla por PD las 12 articulaciones de las piernas; las
-17 articulaciones restantes se mantienen en postura.
+fuerza externa automática. La política recibe cinco cuadros de velocidad
+angular, orientación gravitatoria, comando de velocidad, posiciones y
+velocidades articulares y su acción anterior. No recibe fase de marcha. Su
+salida controla por PD las 29 articulaciones; el saludo y la sentadilla agregan
+referencias suaves sobre la salida de equilibrio.
+
+### Procedencia de la política sin gait
+
+El archivo `third_party/robojudo/policy_wo_gait.pt` proviene de la rama
+`release` de RoboJuDo y conserva su atribución y licencia CC BY 4.0 en
+`third_party/robojudo/`. El código local adapta el armado de observaciones, el
+orden de motores, DDS local, las protecciones y los comandos del menú a este
+simulador en macOS. El proyecto de entrenamiento Unitree RL Lab usa licencia
+Apache 2.0.
 
 La política se entrenó para simulación y el ejemplo no debe enviarse a un robot
 físico sin seguir el procedimiento oficial de seguridad y despliegue de
