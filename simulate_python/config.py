@@ -21,6 +21,13 @@ ENABLE_ELASTIC_BAND = True # Virtual spring band, used for lifting h1
 # entorno. La banda sostiene al G1 durante el arranque y se suelta cuando llega
 # el primer comando del controlador sin banda.
 AUTO_RELEASE_ELASTIC_BAND = os.environ.get("UNITREE_AUTO_RELEASE_BAND") == "1"
+# Con longitud cero la banda sostiene mas que el peso completo del G1 y deja
+# los pies en el aire. Esta longitud lo acerca a su altura nominal (0.793 m)
+# y permite que el piso cargue parte del peso antes de soltarlo.
+AUTO_RELEASE_BAND_LENGTH_M = 0.70
+AUTO_RELEASE_MIN_BASE_HEIGHT_M = 0.65
+AUTO_RELEASE_MAX_BASE_HEIGHT_M = 0.90
+AUTO_RELEASE_MAX_VERTICAL_SPEED_M_S = 0.15
 # Dar tiempo a que el controlador valide el estado, complete su transicion
 # inicial y empiece a ejecutar la politica antes de retirar el soporte.
 AUTO_RELEASE_DELAY_S = 7.0

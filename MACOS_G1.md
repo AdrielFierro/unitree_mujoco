@@ -111,6 +111,11 @@ después de recibir comandos continuos durante siete segundos: tres para adoptar
 la postura y cuatro para estabilizarla. Un comando
 aislado o un controlador que falla al arrancar no libera la banda.
 
+La banda de arranque usa una longitud de 0,70 m para depositar al G1 cerca de
+su altura normal de pie, en lugar de dejarlo suspendido. La cuenta para soltarla
+solo avanza cuando la pelvis está entre 0,65 y 0,90 m y casi no tiene velocidad
+vertical; así los pies ya están apoyados cuando desaparece la asistencia.
+
 El estabilizador rechaza actividades si el G1 supera 20 grados de inclinación.
 Si detecta 35 grados, datos no numéricos o una salida inválida de la política,
 cancela la actividad y pasa los motores a amortiguación segura. Este estado no

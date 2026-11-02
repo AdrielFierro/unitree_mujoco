@@ -30,6 +30,7 @@ if config.ENABLE_ELASTIC_BAND:
         # libera varios segundos despues del primer LowCmd, cuando la politica
         # ya valido la postura y esta enviando referencias continuamente.
         elastic_band.enable = True
+        elastic_band.length = config.AUTO_RELEASE_BAND_LENGTH_M
     viewer = mujoco.viewer.launch_passive(
         mj_model,
         mj_data,
@@ -100,7 +101,16 @@ def SimulationThread():
             with locker:
                 if config.ENABLE_ELASTIC_BAND:
                     if config.AUTO_RELEASE_ELASTIC_BAND and not band_auto_released:
-                        if unitree.LowCmdIsFresh():
+                        base_height = float(mj_data.qpos[2])
+                        vertical_speed = float(mj_data.qvel[2])
+                        release_pose_safe = (
+                            config.AUTO_RELEASE_MIN_BASE_HEIGHT_M
+                            <= base_height
+                            <= config.AUTO_RELEASE_MAX_BASE_HEIGHT_M
+                            and abs(vertical_speed)
+                            <= config.AUTO_RELEASE_MAX_VERTICAL_SPEED_M_S
+                        )
+                        if unitree.LowCmdIsFresh() and release_pose_safe:
                             if band_release_steps is None:
                                 band_release_steps = max(
                                     1,
@@ -115,7 +125,8 @@ def SimulationThread():
                                 band_auto_released = True
                                 print(
                                     "Elastic band: automatically released "
-                                    "by controller"
+                                    "near floor "
+                                    f"(base height={base_height:.3f} m)"
                                 )
                         else:
                             # Un LowCmd aislado (por ejemplo la orden segura
