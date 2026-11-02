@@ -74,6 +74,10 @@ al robot, `Q/E` cambian hacia donde mira, `C` hace una sentadilla moderada,
 `H` saluda e `I` muestra el estado. `Esc` cierra solamente el menu; el
 simulador y el estabilizador siguen funcionando.
 
+Cada orden de desplazamiento ejecuta un unico ciclo de marcha, con uno o dos
+pasos marcados. Durante la recuperacion se detiene el ciclo para evitar los
+pasitos pequenos que antes aparecian al final del movimiento.
+
 Como alternativa, se puede enviar una actividad directamente:
 
 ```bash

@@ -37,12 +37,12 @@ EMERGENCY_JOINT_SPEED = 50.0
 POLICY_OBSERVATION_LIMIT = 100.0
 POLICY_ACTION_LIMIT = 3.0
 MOTION_COMMANDS = {
-    "adelante": (np.array([0.25, 0.0, 0.0]), "avanzando"),
-    "atras": (np.array([-0.20, 0.0, 0.0]), "retrocediendo"),
-    "izquierda": (np.array([0.0, 0.18, 0.0]), "desplazandose a la izquierda"),
-    "derecha": (np.array([0.0, -0.18, 0.0]), "desplazandose a la derecha"),
-    "girar_izquierda": (np.array([0.0, 0.0, 0.35]), "girando a la izquierda"),
-    "girar_derecha": (np.array([0.0, 0.0, -0.35]), "girando a la derecha"),
+    "adelante": (np.array([0.40, 0.0, 0.0]), "avanzando"),
+    "atras": (np.array([-0.30, 0.0, 0.0]), "retrocediendo"),
+    "izquierda": (np.array([0.0, 0.28, 0.0]), "desplazandose a la izquierda"),
+    "derecha": (np.array([0.0, -0.28, 0.0]), "desplazandose a la derecha"),
+    "girar_izquierda": (np.array([0.0, 0.0, 0.50]), "girando a la izquierda"),
+    "girar_derecha": (np.array([0.0, 0.0, -0.50]), "girando a la derecha"),
 }
 # Sentadilla moderada compatible con la postura base de la politica. La
 # demostracion autonoma conserva por separado su sentadilla profunda.
@@ -416,9 +416,10 @@ class StabilizerService:
                     continue
 
                 command = np.zeros(3)
-                gait_active = bool(
-                    self.motion_remaining or self.settle_remaining
-                )
+                # Durante la recuperacion usamos la postura de reposo
+                # promediada. Mantener el ciclo de marcha con velocidad cero
+                # producia varios pasitos pequenos despues de cada orden.
+                gait_active = bool(self.motion_remaining)
                 if self.motion_remaining:
                     command[:] = self.motion_command
                     self.motion_remaining -= 1
